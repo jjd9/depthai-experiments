@@ -10,7 +10,7 @@ just going based off of the ImgFrame metadata (which I should update at some poi
 ### Install Dependencies:
 `python3 install_requirements.py`
 
-Note: `python3 install_requirements.py` also tries to install open3D which is needed if you want to 
+Note: `python3 install_requirements.py` also tries to install kornia, pytorch, onnx, etc... which are needed if you want to 
 compile your own model.
 
 ### Running Example As-Is:
