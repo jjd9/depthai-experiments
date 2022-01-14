@@ -17,6 +17,6 @@ compile your own model.
 `python3 main.py` - Runs depth image pointcloud visualization
 
 ### TODO:
-- Fix ImgFrame shape so NN node doesn't spam warnings
-- Get rectified right intrinsics to the NN node somehow
-- Profile the pointclouds / second coming off of the device vs on cpu 
+- [ ] Fix ImgFrame shape so NN node doesn't spam warnings
+- [ ] Get rectified right intrinsics to the NN node somehow
+- [ ] Profile the pointclouds / second coming off of the device vs on cpu 
