@@ -15,7 +15,11 @@ name = 'depth_to_3d'
 
 class Model(nn.Module):
     def forward(self, image):
-        """Compute a 3d point per pixel given its depth value and the camera intrinsics.
+        """
+        Function taken from here: https://kornia.readthedocs.io/en/latest/_modules/kornia/geometry/depth.html, and 
+        adapted to reduce the number of warnings from ONNX and the blobconverter.
+
+        Compute a 3d point per pixel given its depth value and the camera intrinsics.
         Args:
             depth: image tensor containing a depth value per pixel with shape :math:`(B, 1, H, W)`.
             camera_matrix: tensor containing the camera intrinsics with shape :math:`(B, 3, 3)`.
@@ -29,10 +33,13 @@ class Model(nn.Module):
             >>> depth_to_3d(depth, K).shape
             torch.Size([1, 3, 4, 4])
         """
+
+        # TODO: Remove hardcoded camera intrinsic matrix
         camera_matrix = torch.Tensor([[[454.2445,  -2.048, 320.5384], [1.9331, 455.2362, 237.1727], [-0.0022,   0.0013,   1.]]])
         normalize_points = False
 
-        # convert the uint8 representation of the image to uint16
+        # convert the uint8 representation of the image to uint16 (this is needed because the converter only allows
+        # U8 and FP16 input types)
         depth = 256.0 * image[:,:,:,1::2] + image[:,:,:,::2]
 
         # create base coordinates grid
