@@ -15,6 +15,7 @@ except ImportError as e:
 
 # parameters to speed up visualization
 downsample_pcl = True  # downsample the pointcloud before operating on it and visualizing
+stride = 2 # naively skip every nth point in the pointcloud to speed up visualization
 
 # StereoDepth config options.
 # whether or not to align the depth image on host (As opposed to on device), only matters if align_depth = True
@@ -76,7 +77,7 @@ def create_pcl_pipeline():
     right = pipeline.createMonoCamera()
     stereo = pipeline.createStereoDepth()
     nn = pipeline.createNeuralNetwork()
-    nn.setBlobPath("models/depth_to_3d_simplified_openvino_2021.4_3shave.blob")
+    nn.setBlobPath("models/depth_to_3d_simplified_openvino_2021.4_5shave.blob")
 
     # Define Output
     pointsOut = pipeline.createXLinkOut()
@@ -124,7 +125,7 @@ if __name__ == "__main__":
             raw_pcl = queue.get()
             pcl_data = np.array(raw_pcl.getData()).view(np.float16).reshape(1, 3, 480, 640)
             pcl_data = pcl_data.reshape(3, -1).T.astype(np.float64) / 1000.0
-            pcl_data = pcl_data[pcl_data[:,2] > 0, :]
+            pcl_data = pcl_data[pcl_data[:,2] > 0, :][::stride,:]
             if pcl_data is not None:
                 pcl_converter.update_pcl(pcl_data, downsample=downsample_pcl)
             pcl_converter.visualize_pcd()

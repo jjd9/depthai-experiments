@@ -87,7 +87,7 @@ onnx.save(model_simp, onnx_simplified_path)
 blobconverter.from_onnx(
     model=onnx_simplified_path,
     data_type="FP16",
-    shaves=3,
+    shaves=5,
     use_cache=False,
     output_dir="../models",
     compile_params=["-ip U8"],
