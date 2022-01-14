@@ -1,5 +1,5 @@
 ## On Device Depth deprojection Demo
-This example shows how to perform depth repojection on device.
+This example shows how to perform depth reprojection on device.
 
 Note that the included model will only work for a 640x480 camera (and also used my camera' intrinsics),
 so you should probably update this file. I want to find a way to get this info to the network via some kind of host-device interaction.
