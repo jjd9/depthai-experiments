@@ -6,8 +6,7 @@ from torch import nn
 import onnx
 from onnxsim import simplify
 import blobconverter
-from kornia.utils import create_meshgrid
-from kornia.geometry.camera import unproject_points
+from kornia.geometry.depth import depth_to_3d
 import numpy as np
 
 name = 'depth_to_3d'
@@ -15,48 +14,15 @@ name = 'depth_to_3d'
 
 class Model(nn.Module):
     def forward(self, image):
-        """
-        Function taken from here: https://kornia.readthedocs.io/en/latest/_modules/kornia/geometry/depth.html, and 
-        adapted to reduce the number of warnings from ONNX and the blobconverter.
-
-        Compute a 3d point per pixel given its depth value and the camera intrinsics.
-        Args:
-            depth: image tensor containing a depth value per pixel with shape :math:`(B, 1, H, W)`.
-            camera_matrix: tensor containing the camera intrinsics with shape :math:`(B, 3, 3)`.
-            normalize_points: whether to normalise the pointcloud. This must be set to `True` when the depth is
-            represented as the Euclidean ray length from the camera position.
-        Return:
-            tensor with a 3d point per pixel of the same resolution as the input :math:`(B, 3, H, W)`.
-        Example:
-            >>> depth = torch.rand(1, 1, 4, 4)
-            >>> K = torch.eye(3)[None]
-            >>> depth_to_3d(depth, K).shape
-            torch.Size([1, 3, 4, 4])
-        """
 
         # TODO: Remove hardcoded camera intrinsic matrix
         camera_matrix = torch.Tensor([[[454.2445,  -2.048, 320.5384], [1.9331, 455.2362, 237.1727], [-0.0022,   0.0013,   1.]]])
-        normalize_points = False
 
         # convert the uint8 representation of the image to uint16 (this is needed because the converter only allows
         # U8 and FP16 input types)
         depth = 256.0 * image[:,:,:,1::2] + image[:,:,:,::2]
+        return depth_to_3d(depth, camera_matrix, normalize_points=False)
 
-        # create base coordinates grid
-        _, _, height, width = depth.shape
-        points_2d: torch.Tensor = create_meshgrid(height, width, normalized_coordinates=False)  # 1xHxWx2
-        points_2d = points_2d.to(depth.device).to(depth.dtype)
-
-        # depth should come in Bx1xHxW
-        points_depth: torch.Tensor = depth.permute(0, 2, 3, 1)  # 1xHxWx1
-
-        # project pixels to camera frame
-        camera_matrix_tmp: torch.Tensor = camera_matrix[:, None, None]  # Bx1x1x3x3
-        points_3d: torch.Tensor = unproject_points(
-            points_2d, points_depth, camera_matrix_tmp, normalize=normalize_points
-        )  # BxHxWx3
-
-        return points_3d.permute(0, 3, 1, 2)  # Bx3xHxW
 
 # # Simplest model for debugging
 # class Model(nn.Module):
