@@ -39,7 +39,7 @@ def configureDepthPostProcessing(stereoDepthNode):
     config = stereoDepthNode.initialConfig.get()
     config.postProcessing.speckleFilter.enable = True
     config.postProcessing.speckleFilter.speckleRange = speckle_range
-    # config.postProcessing.temporalFilter.enable = True
+    config.postProcessing.temporalFilter.enable = True
     # config.postProcessing.spatialFilter.enable = True
     # config.postProcessing.spatialFilter.holeFillingRadius = 2
     # config.postProcessing.spatialFilter.numIterations = 1
@@ -105,6 +105,14 @@ def pixel_coord_np(width, height):
     return np.vstack((x.flatten(), y.flatten(), np.ones_like(x.flatten())))
 
 
+# def points_to_3d(depth_image, image_points, inverse_depth_intrinsic):
+#     x_idx = image_points[:,[0]].astype(int)
+#     y_idx = image_points[:,[1]].astype(int)
+#     pixel_coords = np.hstack((x_idx, y_idx, np.ones((image_points.shape[0], 1)))).T
+#     cam_coords = np.dot(inverse_depth_intrinsic, pixel_coords) * \
+#                         depth_image[y_idx, x_idx].ravel().astype(float)
+#     return cam_coords.T
+
 def points_to_3d(depth_image, image_points, inverse_depth_intrinsic):
     x_idx = image_points[:,[0]].astype(int)
     y_idx = image_points[:,[1]].astype(int)
@@ -112,6 +120,7 @@ def points_to_3d(depth_image, image_points, inverse_depth_intrinsic):
     cam_coords = np.dot(inverse_depth_intrinsic, pixel_coords) * \
                         depth_image[y_idx, x_idx].ravel().astype(float)
     return cam_coords.T
+
 
 def best_fit_transform(A, B):
     '''
@@ -166,7 +175,10 @@ def point_3d_tracking(old_image_points, new_image_points, old_3d_points, new_3d_
     reprojectionError=.5    # maximum allowed distance to consider it an inlier.
     confidence=0.999          # RANSAC successful confidence.
     flags=cv2.SOLVEPNP_ITERATIVE
-    useExtrinsicGuess=True
+
+    # # # Use ICP only
+    # _, rotation, translation = best_fit_transform(old_3d_points, new_3d_points)
+    # rvec, _ = cv2.Rodrigues(rotation)
 
     # TODO: Test this
     # Use ICP with known correspondences to get initial guess 
@@ -175,12 +187,13 @@ def point_3d_tracking(old_image_points, new_image_points, old_3d_points, new_3d_
 
     # Ransac with initial guess for robustness
     distCoeffs = np.zeros((4,1), dtype=float)
+    useExtrinsicGuess=True
     _, rvec, translation, _ = cv2.solvePnPRansac(old_3d_points, new_image_points, camera_intrinsics, distCoeffs, rvec_init, translation_init,
                     useExtrinsicGuess, iterationsCount, reprojectionError, confidence,
                     None, flags )
     rotation, _ = cv2.Rodrigues(rvec)
 
-    # # TODO: Test this
+    # TODO: Test this
     # # Ransac with initial guess for robustness
     # useExtrinsicGuess=False
     # distCoeffs = np.zeros((4,1), dtype=float)
@@ -189,8 +202,8 @@ def point_3d_tracking(old_image_points, new_image_points, old_3d_points, new_3d_
     #                 None, flags )
     # rotation, _ = cv2.Rodrigues(rvec)
 
-
     odom_ok = True
+    translation[0] = (translation[0] / 10).round() * 10
     return translation, rotation, odom_ok
 
 # Adapted from:
@@ -227,7 +240,13 @@ if __name__ == "__main__":
         prev_points_3d = None
         cur_feature_points = None    
         cur_points_3d = None
+        # fast_detector = cv2.FastFeatureDetector_create()
+        # fast_detector.setThreshold(50)
+        # fast_detector.setNonmaxSuppression(True)
+        orb = cv2.ORB_create()
 
+        max_num_features = 200
+        max_feature_depth = 3000 # mm
         # main stream loop
         print("Begin streaming at resolution: {} x {}".format(res["width"], res["height"]))
         while True:
@@ -238,21 +257,24 @@ if __name__ == "__main__":
 
             # We can only estimate odometry with we have both the current and previous frames
             if not (any([frame is None for frame in cur_img_frames]) or any([frame is None for frame in prev_img_frames])):
-                # TODO: Visual odometry Algo goes here
+                # Visual odometry Algo goes here
                 depth_frame = cur_img_frames[0]
 
-                # TODO: How to avoid extinction of points? Need to add points back in
-
+                # TODO: Investigate other features
                 # find and draw the keypoints
-                new_feature_points = cv2.goodFeaturesToTrack(cur_img_frames[1], 100, 0.01,10)
+                new_feature_points = cv2.goodFeaturesToTrack(cur_img_frames[1], max_num_features, 0.01,10)
+                # kpts = fast_detector.detect(cur_img_frames[1], None)
+                # kpts = orb.detect(cur_img_frames[1], None)
+                # new_feature_points = np.array([k.pt for k in kpts], dtype=np.float32).reshape((len(kpts), 1, 2))
                 termcrit = (cv2.TERM_CRITERIA_COUNT+cv2.TERM_CRITERIA_EPS, 30, 0.01)
-                window_size = (21,21)
+                window_size = (11,11)
+                # window_size = (21,21)
                 cur_feature_points, status, err = cv2.calcOpticalFlowPyrLK(prev_img_frames[1], cur_img_frames[1], prev_feature_points, new_feature_points, None, None, window_size, 3, termcrit, 0, 0.001)
                 # delete unmatched features, features outside the image boundaries, and features that are too far away                
                 remove_idx = []
                 for i in range(status.shape[0]):
                     pt = cur_feature_points[i].ravel().astype(int)                    
-                    if status[i] == 0 or pt[0] < 0 or pt[1] < 0 or pt[0] >= res["width"] or pt[1] >= res["height"] or depth_frame[pt[1], pt[0]] == 0 or depth_frame[pt[1], pt[0]] > 10000:
+                    if status[i] == 0 or pt[0] < 0 or pt[1] < 0 or pt[0] >= res["width"] or pt[1] >= res["height"] or depth_frame[pt[1], pt[0]] == 0 or depth_frame[pt[1], pt[0]] > max_feature_depth:
                         status[i] = 0
                         remove_idx.append(i)
                 cur_feature_points = np.delete(cur_feature_points, remove_idx, axis=0)
@@ -261,45 +283,80 @@ if __name__ == "__main__":
                     prev_points_3d = np.delete(prev_points_3d, remove_idx, axis=0)
                 n_feature_points = cur_feature_points.shape[0]
 
-                feature_img = cv2.cvtColor(cur_img_frames[1].copy(),cv2.COLOR_GRAY2RGB)
-                for pt in cur_feature_points:
-                    x,y = pt.ravel().astype(int)
-                    cv2.circle(feature_img,(x,y),3,(0,255,0),-1)
-                cv2.imshow("Current Features", feature_img)
-
                 # convert points to 3d                
                 cur_points_3d = points_to_3d(depth_frame, cur_feature_points.squeeze(axis=1), inverse_rectified_right_intrinsic)
-                # convert from camera to world coordinates
-                cur_points_3d = cur_points_3d[:, [2,0,1]]
-                cur_points_3d[:,2] *= -1.0
 
                 if prev_points_3d is not None and n_feature_points >= 4:
                     # apply 3d point tracking and get change in 3d position and orientation
+                    # import open3d as o3d
+                    # prev_pcl = o3d.geometry.PointCloud()
+                    # prev_pcl.points = o3d.utility.Vector3dVector(prev_points_3d)
+                    # prev_pcl.colors = o3d.utility.Vector3dVector([(0,0,255) for _ in prev_points_3d])
+                    # cur_pcl = o3d.geometry.PointCloud()
+                    # cur_pcl.points = o3d.utility.Vector3dVector(cur_points_3d)
+                    # cur_pcl.colors = o3d.utility.Vector3dVector([(255,0,0) for _ in cur_points_3d])
+
                     translation, rotation, odom_ok = point_3d_tracking(prev_feature_points, cur_feature_points, prev_points_3d, cur_points_3d, rectified_right_intrinsic)
+                    # transform = np.eye(4)
+                    # transform[:3,3] = translation
+                    # transform[:3,:3] = rotation
+                    # aligned_pcl = o3d.geometry.PointCloud()
+                    # aligned_pcl.points = o3d.utility.Vector3dVector(prev_points_3d)
+                    # aligned_pcl.colors = o3d.utility.Vector3dVector([(0,255,0) for _ in prev_points_3d])
+                    # aligned_pcl.transform(transform)
+
+                    # o3d.visualization.draw_geometries([prev_pcl, cur_pcl, aligned_pcl])
+                    # exit()
 
                     # integration change
-                    if odom_ok:
-                        pose.translate(translation)
-                        pose.rotate(rotation)
+                    pose.translate(translation)
+                    pose.rotate(rotation)
+
+                    # Visualize features
+                    feature_img = cv2.cvtColor(cur_img_frames[1].copy(),cv2.COLOR_GRAY2RGB)
+                    for pt in cur_feature_points:
+                        x,y = pt.ravel().astype(int)
+                        cv2.circle(feature_img,(x,y),3,(0,255,0),-1)
+                    
+                    # # Visualize matches
+                    # prev_kpts = [cv2.KeyPoint(*pt.ravel(),1) for pt in prev_feature_points] 
+                    # cur_kpts = [cv2.KeyPoint(*pt.ravel(),1) for pt in cur_feature_points] 
+                    # matches = [cv2.DMatch(idx, idx, 0) for idx in range(len(cur_kpts))]
+                    # feature_img = cv2.drawMatches(prev_img_frames[1],prev_kpts,cur_img_frames[1],cur_kpts,matches,None,flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS, matchColor=(0,255,0))
+
+                    # format of text
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    fontScale = 0.5
+                    thickness = 2
+                    color = (0, 0, 255) # red
+                    # position of text
+                    position_org = (50, 50)
+                    orientation_org = (50, 150)
+                    pos_text = pose.getPositionString()
+                    rpy_text = pose.getRPYString()
+                    feature_img = cv2.putText(feature_img, 'Camera Position: ' + pos_text, position_org, font, 
+                                    fontScale, color, thickness, cv2.LINE_AA)
+                    feature_img = cv2.putText(feature_img, 'Camera Orientation: ' + rpy_text, orientation_org, font, 
+                                    fontScale, color, thickness, cv2.LINE_AA)
+
+                    cv2.imshow("Current Features", feature_img)
 
                 # update these book keeping variables
+                # To avoid running out of tracked feature points, we add all the valid new features points (not the cur_feature_points)
                 remove_idx = []
                 for i in range(new_feature_points.shape[0]):
                     pt = new_feature_points[i].ravel().astype(int)                    
-                    if pt[0] < 0 or pt[1] < 0 or pt[0] >= res["width"] or pt[1] >= res["height"] or depth_frame[pt[1], pt[0]] == 0 or depth_frame[pt[1], pt[0]] > 10000:
+                    if pt[0] < 0 or pt[1] < 0 or pt[0] >= res["width"] or pt[1] >= res["height"] or depth_frame[pt[1], pt[0]] == 0 or depth_frame[pt[1], pt[0]] > max_feature_depth:
                         remove_idx.append(i)
                 new_feature_points = np.delete(new_feature_points, remove_idx, axis=0)
                 # convert points to 3d
                 new_points_3d = points_to_3d(depth_frame, new_feature_points.squeeze(axis=1), inverse_rectified_right_intrinsic)
-                # convert from camera to world coordinates
-                new_points_3d = new_points_3d[:, [2,0,1]]
-                new_points_3d[:,2] *= -1.0
 
                 prev_feature_points = new_feature_points.copy()
-                prev_points_3d = cur_points_3d.copy()
+                prev_points_3d = new_points_3d.copy()
 
             elif not any([frame is None for frame in cur_img_frames]):
-                prev_feature_points = cv2.goodFeaturesToTrack(cur_img_frames[1], 100, 0.01,10)
+                prev_feature_points = cv2.goodFeaturesToTrack(cur_img_frames[1], max_num_features, 0.01,10)
 
             # Update book keeping variables
             prev_img_frames[0] = cur_img_frames[0]
@@ -309,3 +366,7 @@ if __name__ == "__main__":
             
             if cv2.waitKey(1) == "q":
                 break
+
+            # # convert from camera to world coordinates
+            # cur_points_3d = cur_points_3d[:, [2,0,1]]
+            # cur_points_3d[:,2] *= -1.0
