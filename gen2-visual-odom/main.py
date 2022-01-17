@@ -113,6 +113,48 @@ def points_to_3d(depth_image, image_points, inverse_depth_intrinsic):
                         depth_image[y_idx, x_idx].ravel().astype(float)
     return cam_coords.T
 
+def best_fit_transform(A, B):
+    '''
+    Calculates the least-squares best-fit transform that maps corresponding points A to B in m spatial dimensions
+    Input:
+      A: Nxm numpy array of corresponding points
+      B: Nxm numpy array of corresponding points
+    Returns:
+      T: (m+1)x(m+1) homogeneous transformation matrix that maps A on to B
+      R: mxm rotation matrix
+      t: mx1 translation vector
+    '''
+
+    assert A.shape == B.shape
+
+    # get number of dimensions
+    m = A.shape[1]
+
+    # translate points to their centroids
+    centroid_A = np.mean(A, axis=0)
+    centroid_B = np.mean(B, axis=0)
+    AA = A - centroid_A
+    BB = B - centroid_B
+
+    # rotation matrix
+    H = np.dot(AA.T, BB)
+    U, S, Vt = np.linalg.svd(H)
+    R = np.dot(Vt.T, U.T)
+
+    # special reflection case
+    if np.linalg.det(R) < 0:
+       Vt[m-1,:] *= -1
+       R = np.dot(Vt.T, U.T)
+
+    # translation
+    t = centroid_B.T - np.dot(R,centroid_A.T)
+
+    # homogeneous transformation
+    T = np.identity(m+1)
+    T[:m, :m] = R
+    T[:m, m] = t
+
+    return T, R, t
 
 def point_3d_tracking(old_image_points, new_image_points, old_3d_points, new_3d_points, camera_intrinsics):
     # Rotation(R) estimation using Nister's Five Points Algorithm
@@ -123,17 +165,36 @@ def point_3d_tracking(old_image_points, new_image_points, old_3d_points, new_3d_
     iterationsCount=500        # number of Ransac iterations.
     reprojectionError=.5    # maximum allowed distance to consider it an inlier.
     confidence=0.999          # RANSAC successful confidence.
-    useExtrinsicGuess=False
     flags=cv2.SOLVEPNP_ITERATIVE
+    useExtrinsicGuess=True
 
+    # TODO: Test this
+    # Use ICP with known correspondences to get initial guess 
+    _, rotation_init, translation_init = best_fit_transform(old_3d_points, new_3d_points)
+    rvec_init, _ = cv2.Rodrigues(rotation_init)
+
+    # Ransac with initial guess for robustness
     distCoeffs = np.zeros((4,1), dtype=float)
-    _, rvec, translation, _ = cv2.solvePnPRansac(old_3d_points, new_image_points, camera_intrinsics, distCoeffs, None, None,
+    _, rvec, translation, _ = cv2.solvePnPRansac(old_3d_points, new_image_points, camera_intrinsics, distCoeffs, rvec_init, translation_init,
                     useExtrinsicGuess, iterationsCount, reprojectionError, confidence,
                     None, flags )
     rotation, _ = cv2.Rodrigues(rvec)
+
+    # # TODO: Test this
+    # # Ransac with initial guess for robustness
+    # useExtrinsicGuess=False
+    # distCoeffs = np.zeros((4,1), dtype=float)
+    # _, rvec, translation, _ = cv2.solvePnPRansac(old_3d_points, new_image_points, camera_intrinsics, distCoeffs, None, None,
+    #                 useExtrinsicGuess, iterationsCount, reprojectionError, confidence,
+    #                 None, flags )
+    # rotation, _ = cv2.Rodrigues(rvec)
+
+
     odom_ok = True
     return translation, rotation, odom_ok
 
+# Adapted from:
+# https://github.com/ZhenghaoFei/visual_odom/blob/master/src/visualOdometry.cpp
 
 if __name__ == "__main__":
     print("Initialize pipeline")
@@ -178,22 +239,26 @@ if __name__ == "__main__":
             # We can only estimate odometry with we have both the current and previous frames
             if not (any([frame is None for frame in cur_img_frames]) or any([frame is None for frame in prev_img_frames])):
                 # TODO: Visual odometry Algo goes here
+                depth_frame = cur_img_frames[0]
 
                 # TODO: How to avoid extinction of points? Need to add points back in
 
                 # find and draw the keypoints
-                cur_feature_points = cv2.goodFeaturesToTrack(cur_img_frames[1], 100, 0.01,10)
+                new_feature_points = cv2.goodFeaturesToTrack(cur_img_frames[1], 100, 0.01,10)
                 termcrit = (cv2.TERM_CRITERIA_COUNT+cv2.TERM_CRITERIA_EPS, 30, 0.01)
                 window_size = (21,21)
-                _, status, err = cv2.calcOpticalFlowPyrLK(prev_img_frames[1], cur_img_frames[1], prev_feature_points, cur_feature_points, None, None, window_size, 3, termcrit, 0, 0.001)
-                # delete unmatched features
+                cur_feature_points, status, err = cv2.calcOpticalFlowPyrLK(prev_img_frames[1], cur_img_frames[1], prev_feature_points, new_feature_points, None, None, window_size, 3, termcrit, 0, 0.001)
+                # delete unmatched features, features outside the image boundaries, and features that are too far away                
                 remove_idx = []
                 for i in range(status.shape[0]):
-                    pt = cur_feature_points[i].ravel()
-                    if status[i] == 0 or pt[0] < 0 or pt[1] < 0 or pt[0] >= res["width"] or pt[1] >= res["height"]:
+                    pt = cur_feature_points[i].ravel().astype(int)                    
+                    if status[i] == 0 or pt[0] < 0 or pt[1] < 0 or pt[0] >= res["width"] or pt[1] >= res["height"] or depth_frame[pt[1], pt[0]] == 0 or depth_frame[pt[1], pt[0]] > 10000:
                         status[i] = 0
                         remove_idx.append(i)
                 cur_feature_points = np.delete(cur_feature_points, remove_idx, axis=0)
+                prev_feature_points = np.delete(prev_feature_points, remove_idx, axis=0)
+                if prev_points_3d is not None:
+                    prev_points_3d = np.delete(prev_points_3d, remove_idx, axis=0)
                 n_feature_points = cur_feature_points.shape[0]
 
                 feature_img = cv2.cvtColor(cur_img_frames[1].copy(),cv2.COLOR_GRAY2RGB)
@@ -202,12 +267,11 @@ if __name__ == "__main__":
                     cv2.circle(feature_img,(x,y),3,(0,255,0),-1)
                 cv2.imshow("Current Features", feature_img)
 
-                # convert points to 3d
-                cur_points_3d = points_to_3d(cur_img_frames[0], cur_feature_points.squeeze(axis=1), inverse_rectified_right_intrinsic)
+                # convert points to 3d                
+                cur_points_3d = points_to_3d(depth_frame, cur_feature_points.squeeze(axis=1), inverse_rectified_right_intrinsic)
                 # convert from camera to world coordinates
                 cur_points_3d = cur_points_3d[:, [2,0,1]]
                 cur_points_3d[:,2] *= -1.0
-
 
                 if prev_points_3d is not None and n_feature_points >= 4:
                     # apply 3d point tracking and get change in 3d position and orientation
@@ -219,11 +283,23 @@ if __name__ == "__main__":
                         pose.rotate(rotation)
 
                 # update these book keeping variables
-                prev_feature_points = cur_feature_points.copy()
+                remove_idx = []
+                for i in range(new_feature_points.shape[0]):
+                    pt = new_feature_points[i].ravel().astype(int)                    
+                    if pt[0] < 0 or pt[1] < 0 or pt[0] >= res["width"] or pt[1] >= res["height"] or depth_frame[pt[1], pt[0]] == 0 or depth_frame[pt[1], pt[0]] > 10000:
+                        remove_idx.append(i)
+                new_feature_points = np.delete(new_feature_points, remove_idx, axis=0)
+                # convert points to 3d
+                new_points_3d = points_to_3d(depth_frame, new_feature_points.squeeze(axis=1), inverse_rectified_right_intrinsic)
+                # convert from camera to world coordinates
+                new_points_3d = new_points_3d[:, [2,0,1]]
+                new_points_3d[:,2] *= -1.0
+
+                prev_feature_points = new_feature_points.copy()
                 prev_points_3d = cur_points_3d.copy()
 
             elif not any([frame is None for frame in cur_img_frames]):
-                prev_feature_points = cv2.goodFeaturesToTrack(cur_img_frames[1], 30, 0.01,10)
+                prev_feature_points = cv2.goodFeaturesToTrack(cur_img_frames[1], 100, 0.01,10)
 
             # Update book keeping variables
             prev_img_frames[0] = cur_img_frames[0]
