@@ -206,8 +206,26 @@ def point_3d_tracking(old_image_points, new_image_points, old_3d_points, new_3d_
     translation[0] = (translation[0] / 10).round() * 10
     return translation, rotation, odom_ok
 
+def bucketFeatures(features):
+    scale = 20
+    temp_points = features.reshape(-1, 2)
+    bucket_points = (temp_points / scale).round() * scale
+    _, bucket_idx = np.unique(bucket_points, axis=0, return_index=True)
+    bucket_list = []
+    for idx in bucket_idx:
+        cond = np.all(bucket_points == bucket_points[idx, :], axis=1)
+        if np.sum(cond) == 1:
+            bucket_list.append(temp_points[idx, :].tolist())
+        else:
+            bucket_list.append(np.mean(temp_points[cond, :], axis=0).tolist())
+    return np.array(bucket_list, dtype=np.float32).reshape(-1, 1, 2)
+
 # Adapted from:
 # https://github.com/ZhenghaoFei/visual_odom/blob/master/src/visualOdometry.cpp
+
+# TODO: Try circular matching
+# TODO: Figure out big jumps
+# TODO: 6DOF Kalman filter
 
 if __name__ == "__main__":
     print("Initialize pipeline")
@@ -243,10 +261,10 @@ if __name__ == "__main__":
         # fast_detector = cv2.FastFeatureDetector_create()
         # fast_detector.setThreshold(50)
         # fast_detector.setNonmaxSuppression(True)
-        orb = cv2.ORB_create()
+        # orb = cv2.ORB_create()
 
-        max_num_features = 200
-        max_feature_depth = 3000 # mm
+        max_num_features = 1000
+        max_feature_depth = 4000 # mm
         # main stream loop
         print("Begin streaming at resolution: {} x {}".format(res["width"], res["height"]))
         while True:
@@ -262,13 +280,16 @@ if __name__ == "__main__":
 
                 # TODO: Investigate other features
                 # find and draw the keypoints
-                new_feature_points = cv2.goodFeaturesToTrack(cur_img_frames[1], max_num_features, 0.01,10)
-                # kpts = fast_detector.detect(cur_img_frames[1], None)
+                new_feature_points = cv2.goodFeaturesToTrack(cur_img_frames[1], max_num_features, 0.01, 10)
+                # kpts = fast_detector.detect(cur_img_frames[1], None)                
                 # kpts = orb.detect(cur_img_frames[1], None)
                 # new_feature_points = np.array([k.pt for k in kpts], dtype=np.float32).reshape((len(kpts), 1, 2))
+
+                # bucket features
+                new_feature_points = bucketFeatures(new_feature_points)
+
                 termcrit = (cv2.TERM_CRITERIA_COUNT+cv2.TERM_CRITERIA_EPS, 30, 0.01)
-                window_size = (11,11)
-                # window_size = (21,21)
+                window_size = (21,21)
                 cur_feature_points, status, err = cv2.calcOpticalFlowPyrLK(prev_img_frames[1], cur_img_frames[1], prev_feature_points, new_feature_points, None, None, window_size, 3, termcrit, 0, 0.001)
                 # delete unmatched features, features outside the image boundaries, and features that are too far away                
                 remove_idx = []
@@ -357,6 +378,9 @@ if __name__ == "__main__":
 
             elif not any([frame is None for frame in cur_img_frames]):
                 prev_feature_points = cv2.goodFeaturesToTrack(cur_img_frames[1], max_num_features, 0.01,10)
+                # bucket features
+                prev_feature_points = bucketFeatures(prev_feature_points)
+
 
             # Update book keeping variables
             prev_img_frames[0] = cur_img_frames[0]
