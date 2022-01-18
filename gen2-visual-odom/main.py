@@ -71,6 +71,8 @@ def create_odom_pipeline():
     depthOut.setStreamName("depth")
     rectifiedRightOut = pipeline.createXLinkOut()
     rectifiedRightOut.setStreamName("rectified_right")
+    rectifiedLeftOut = pipeline.createXLinkOut()
+    rectifiedLeftOut.setStreamName("rectified_left")
 
     mono_camera_resolution = res["THE_P"]
     left.setResolution(mono_camera_resolution)
@@ -86,9 +88,10 @@ def create_odom_pipeline():
     right.out.link(stereo.right)
     stereo.depth.link(depthOut.input)
     stereo.rectifiedRight.link(rectifiedRightOut.input)
+    stereo.rectifiedLeft.link(rectifiedLeftOut.input)
 
     # Book-keeping
-    streams = [depthOut.getStreamName(), rectifiedRightOut.getStreamName()]
+    streams = [depthOut.getStreamName(), rectifiedRightOut.getStreamName(), rectifiedLeftOut.getStreamName()]
 
     return pipeline, streams
 
@@ -220,6 +223,86 @@ def bucketFeatures(features):
             bucket_list.append(np.mean(temp_points[cond, :], axis=0).tolist())
     return np.array(bucket_list, dtype=np.float32).reshape(-1, 1, 2)
 
+fast_detector = cv2.FastFeatureDetector_create()
+fast_detector.setThreshold(50)
+fast_detector.setNonmaxSuppression(True)
+def appendFeaturePoints(image, feature_points, feature_ages):
+    kpts = fast_detector.detect(image, None)
+    new_feature_points = np.array([k.pt for k in kpts], dtype=np.float32).reshape((len(kpts), 1, 2))
+    feature_points = np.vstack((feature_points, new_feature_points))
+    feature_ages = np.vstack((feature_ages, np.zeros((feature_points.shape[0], 1))))
+
+def bucketFeatures(image, odom_points, bucket_size, features_per_bucket):
+    pass
+
+def deleteUnmatchedFeatures(points0, points1, points2, points3, new_points, status0, status1, status2, status3, feature_ages):
+    remove_idx = []
+    for i in range(status3.shape[0]):
+        pt0 = points0[i].ravel()
+        pt1 = points1[i].ravel()
+        pt2 = points2[i].ravel()
+        pt3 = points3[i].ravel()
+        pt_new = new_points[i].ravel()
+        if ((status3[i] == 0) or (pt3[0] < 0) or (pt3[1] < 0) or
+            (status2[i] == 0) or (pt2[0] < 0) or (pt2[1] < 0) or
+            (status1[i] == 0) or (pt1[0] < 0) or (pt1[1] < 0) or
+            (status0[i] == 0) or (pt0[0] < 0) or (pt0[1] < 0) or
+                                 (pt_new[0] < 0) or (pt_new[1] < 0)):
+            remove_idx.append(i)
+    points0 = np.delete(points0, remove_idx, axis=0)
+    points1 = np.delete(points1, remove_idx, axis=0)
+    points2 = np.delete(points2, remove_idx, axis=0)
+    points3 = np.delete(points3, remove_idx, axis=0)
+    new_points = np.delete(new_points, remove_idx, axis=0)
+    feature_ages = np.delete(feature_ages, remove_idx, axis=0)
+    feature_ages += 1
+
+
+def circularMatchFeatures(prev_left_frame, prev_right_frame, cur_left_frame, cur_right_frame, prev_left_points, prev_right_points, cur_left_points, cur_right_points, odom_points, feature_ages):
+    termcrit = (cv2.TERM_CRITERIA_COUNT+cv2.TERM_CRITERIA_EPS, 30, 0.01)
+    window_size = (21,21)
+    prev_left_points, status0, _ = cv2.calcOpticalFlowPyrLK(prev_right_frame, prev_left_frame, prev_right_points,prev_left_points, None, None, window_size, 3, termcrit, 0, 0.001)
+    cur_left_points, status1, _ = cv2.calcOpticalFlowPyrLK(prev_left_frame,  cur_left_frame,  prev_left_points, cur_left_points, None, None, window_size, 3, termcrit, 0, 0.001)
+    cur_right_points, status2, _ = cv2.calcOpticalFlowPyrLK(cur_left_frame,   cur_right_frame, cur_left_points,  cur_right_points, None, None, window_size, 3, termcrit, 0, 0.001)
+    new_right_points, status3, _ = cv2.calcOpticalFlowPyrLK(cur_right_frame,  prev_right_frame,cur_right_points, prev_right_points, None, None, window_size, 3, termcrit, 0, 0.001)
+    deleteUnmatchedFeatures(prev_points_right, prev_points_left, cur_points_right, cur_points_left, new_right_points, status0, status1, status2, status3, feature_ages)
+    return new_right_points
+
+def validateMatches(prev_points, new_points, threshold):
+    diffs = np.max(np.abs(prev_points - new_points), axis=0)
+    return (diffs <= threshold)
+
+def removeInvalidPoints(points, depth_map, status):
+    remove_idx = []
+    for i in range(status.shape[0]):
+        pt = cur_feature_points[i].ravel().astype(int)                    
+        depth_val = depth_map[pt[1], pt[0]]
+        if status[i] == 0 or pt[0] < 0 or pt[1] < 0 or pt[0] >= res["width"] or pt[1] >= res["height"] or depth_val == 0 or depth_val > max_feature_depth:
+            status[i] = 0
+            remove_idx.append(i)
+    return np.delete(points, remove_idx, axis=0)
+
+def matchFeatures(prev_img_frames, cur_img_frames, prev_points, cur_points, odom_points):
+    _, prev_right_frame, prev_left_frame  = prev_img_frames
+    _, cur_right_frame, cur_left_frame = cur_img_frames
+    _, prev_right_points, prev_left_points = prev_points
+    _, cur_right_points, cur_left_points = cur_points
+    if odom_points.shape[0] < 2000:
+        appendFeaturePoints(prev_right_frame, odom_points)
+
+    bucket_size = res["height"] / 10
+    features_per_bucket = 1
+    bucketFeatures(prev_right_frame, odom_points, bucket_size, features_per_bucket)
+    matched_points_right, status = circularMatchFeatures(prev_left_frame, prev_right_frame, cur_left_frame, cur_right_frame, prev_left_points, prev_right_points, cur_left_points, cur_right_points, odom_points)
+
+    status = validateMatches(prev_right_points, matched_points_right, threshold=0)
+
+    prev_left_points = removeInvalidPoints(prev_left_points, status)
+    cur_left_points = removeInvalidPoints(cur_left_points, status)
+    prev_right_points = removeInvalidPoints(prev_right_points, status)
+    cur_right_points = removeInvalidPoints(cur_right_points, status)
+    odom_points = cur_right_points.copy()
+
 # Adapted from:
 # https://github.com/ZhenghaoFei/visual_odom/blob/master/src/visualOdometry.cpp
 
@@ -245,26 +328,27 @@ if __name__ == "__main__":
         rectified_right_intrinsic = np.linalg.inv(inverse_rectified_right_intrinsic)
 
         # setup cv window(s)
-        # cv2.namedWindow("Feature Tracking")
         cv2.namedWindow("Current Features")
 
         # setup bookkeeping variables
-        prev_img_frames = [None, None] # depth frame, recitified right frame
-        cur_img_frames = [None, None]  # depth frame, recitified right frame
-        queue_list = [device.getOutputQueue(
-            stream, maxSize=8, blocking=False) for stream in streams]
+        prev_img_frames = [None, None, None] # depth frame, recitified right frame, recitified left frame
+        cur_img_frames = [None, None, None]  # depth frame, recitified right frame, recitified left frame
+        queue_list = [device.getOutputQueue(stream, maxSize=8, blocking=False) for stream in streams]
+
         pose = Pose()
         prev_feature_points = None
         prev_points_3d = None
         cur_feature_points = None    
         cur_points_3d = None
-        # fast_detector = cv2.FastFeatureDetector_create()
-        # fast_detector.setThreshold(50)
-        # fast_detector.setNonmaxSuppression(True)
-        # orb = cv2.ORB_create()
 
-        max_num_features = 1000
+        max_num_features = 2000
         max_feature_depth = 4000 # mm
+
+        bucket_resolution = 10
+        h_buckets = res["height"] / bucket_resolution
+        w_buckets = res["width"] / bucket_resolution
+        num_buckets = h_buckets * w_buckets
+
         # main stream loop
         print("Begin streaming at resolution: {} x {}".format(res["width"], res["height"]))
         while True:
@@ -275,27 +359,20 @@ if __name__ == "__main__":
 
             # We can only estimate odometry with we have both the current and previous frames
             if not (any([frame is None for frame in cur_img_frames]) or any([frame is None for frame in prev_img_frames])):
-                # Visual odometry Algo goes here
-                depth_frame = cur_img_frames[0]
+                # depth, right, left
+                cur_depth_frame, cur_right_frame, cur_left_frame = cur_img_frames
+                prev_depth_frame, prev_right_frame, prev_left_frame = prev_img_frames
+                cur_points_3d, cur_points_right, cur_points_left = cur_points
+                prev_points_3d, prev_points_right, prev_points_left = prev_points
 
-                # TODO: Investigate other features
-                # find and draw the keypoints
-                new_feature_points = cv2.goodFeaturesToTrack(cur_img_frames[1], max_num_features, 0.01, 10)
-                # kpts = fast_detector.detect(cur_img_frames[1], None)                
-                # kpts = orb.detect(cur_img_frames[1], None)
-                # new_feature_points = np.array([k.pt for k in kpts], dtype=np.float32).reshape((len(kpts), 1, 2))
+                matchFeatures(prev_img_frames, cur_img_frames, prev_points, cur_points)
 
-                # bucket features
-                new_feature_points = bucketFeatures(new_feature_points)
-
-                termcrit = (cv2.TERM_CRITERIA_COUNT+cv2.TERM_CRITERIA_EPS, 30, 0.01)
-                window_size = (21,21)
-                cur_feature_points, status, err = cv2.calcOpticalFlowPyrLK(prev_img_frames[1], cur_img_frames[1], prev_feature_points, new_feature_points, None, None, window_size, 3, termcrit, 0, 0.001)
                 # delete unmatched features, features outside the image boundaries, and features that are too far away                
                 remove_idx = []
                 for i in range(status.shape[0]):
                     pt = cur_feature_points[i].ravel().astype(int)                    
-                    if status[i] == 0 or pt[0] < 0 or pt[1] < 0 or pt[0] >= res["width"] or pt[1] >= res["height"] or depth_frame[pt[1], pt[0]] == 0 or depth_frame[pt[1], pt[0]] > max_feature_depth:
+                    depth_val = cur_depth_frame[pt[1], pt[0]]
+                    if status[i] == 0 or pt[0] < 0 or pt[1] < 0 or pt[0] >= res["width"] or pt[1] >= res["height"] or depth_val == 0 or depth_val > max_feature_depth:
                         status[i] = 0
                         remove_idx.append(i)
                 cur_feature_points = np.delete(cur_feature_points, remove_idx, axis=0)
@@ -305,33 +382,14 @@ if __name__ == "__main__":
                 n_feature_points = cur_feature_points.shape[0]
 
                 # convert points to 3d                
-                cur_points_3d = points_to_3d(depth_frame, cur_feature_points.squeeze(axis=1), inverse_rectified_right_intrinsic)
+                cur_points_3d = points_to_3d(cur_depth_frame, cur_feature_points.squeeze(axis=1), inverse_rectified_right_intrinsic)
 
                 if prev_points_3d is not None and n_feature_points >= 4:
-                    # apply 3d point tracking and get change in 3d position and orientation
-                    # import open3d as o3d
-                    # prev_pcl = o3d.geometry.PointCloud()
-                    # prev_pcl.points = o3d.utility.Vector3dVector(prev_points_3d)
-                    # prev_pcl.colors = o3d.utility.Vector3dVector([(0,0,255) for _ in prev_points_3d])
-                    # cur_pcl = o3d.geometry.PointCloud()
-                    # cur_pcl.points = o3d.utility.Vector3dVector(cur_points_3d)
-                    # cur_pcl.colors = o3d.utility.Vector3dVector([(255,0,0) for _ in cur_points_3d])
-
                     translation, rotation, odom_ok = point_3d_tracking(prev_feature_points, cur_feature_points, prev_points_3d, cur_points_3d, rectified_right_intrinsic)
-                    # transform = np.eye(4)
-                    # transform[:3,3] = translation
-                    # transform[:3,:3] = rotation
-                    # aligned_pcl = o3d.geometry.PointCloud()
-                    # aligned_pcl.points = o3d.utility.Vector3dVector(prev_points_3d)
-                    # aligned_pcl.colors = o3d.utility.Vector3dVector([(0,255,0) for _ in prev_points_3d])
-                    # aligned_pcl.transform(transform)
-
-                    # o3d.visualization.draw_geometries([prev_pcl, cur_pcl, aligned_pcl])
-                    # exit()
 
                     # integration change
-                    pose.translate(translation)
                     pose.rotate(rotation)
+                    pose.translate(translation)
 
                     # Visualize features
                     feature_img = cv2.cvtColor(cur_img_frames[1].copy(),cv2.COLOR_GRAY2RGB)
@@ -371,10 +429,10 @@ if __name__ == "__main__":
                         remove_idx.append(i)
                 new_feature_points = np.delete(new_feature_points, remove_idx, axis=0)
                 # convert points to 3d
-                new_points_3d = points_to_3d(depth_frame, new_feature_points.squeeze(axis=1), inverse_rectified_right_intrinsic)
+                new_points_3d = points_to_3d(cur_depth_frame, new_feature_points.squeeze(axis=1), inverse_rectified_right_intrinsic)
 
-                prev_feature_points = new_feature_points.copy()
-                prev_points_3d = new_points_3d.copy()
+                prev_feature_points = cur_feature_points.copy()
+                prev_points_3d = cur_points_3d.copy()
 
             elif not any([frame is None for frame in cur_img_frames]):
                 prev_feature_points = cv2.goodFeaturesToTrack(cur_img_frames[1], max_num_features, 0.01,10)
@@ -383,10 +441,8 @@ if __name__ == "__main__":
 
 
             # Update book keeping variables
-            prev_img_frames[0] = cur_img_frames[0]
-            prev_img_frames[1] = cur_img_frames[1]
-            cur_img_frames[0] = None
-            cur_img_frames[1] = None
+            prev_img_frames = [x for x in cur_img_frames]
+            cur_img_frames = [None] * len(cur_img_frames)
             
             if cv2.waitKey(1) == "q":
                 break
