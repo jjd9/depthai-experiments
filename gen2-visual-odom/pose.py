@@ -43,11 +43,13 @@ class Pose:
         # TODO: Make this a quaternion
         self.orientation = np.eye(3, dtype=float)  # euler orientation
 
-    def translate(self, translation):
-        self.position += translation.reshape(3,)
-
-    def rotate(self, rotation):
-        self.orientation = np.dot(rotation, self.orientation)
+    def update(self, pose_update):
+        old_pose = np.eye(4, dtype=float)
+        old_pose[:3, 3] = self.position.reshape(3,)
+        old_pose[:3, :3] = self.orientation
+        new_pose = old_pose @ np.linalg.inv(pose_update)
+        self.position = new_pose[:3, 3].reshape(3,)
+        self.orientation = new_pose[:3, :3]
 
     def getRPYString(self):
         rpy = rotationMatrixToEulerAngles(self.orientation)
