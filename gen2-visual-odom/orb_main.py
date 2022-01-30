@@ -92,94 +92,8 @@ def create_odom_pipeline():
 
     return pipeline, streams
 
-
-def points_to_3d(depth_image, image_points, inverse_depth_intrinsic):
-    x_idx = image_points[:,[0]].astype(int)
-    y_idx = image_points[:,[1]].astype(int)
-    pixel_coords = np.hstack((x_idx, y_idx, np.ones((image_points.shape[0], 1)))).T
-    cam_coords = np.dot(inverse_depth_intrinsic, pixel_coords) * \
-                        depth_image[y_idx, x_idx].ravel().astype(float)
-    return cam_coords.T
-
-
-def best_fit_transform(A, B):
-    '''
-    Calculates the least-squares best-fit transform that maps corresponding points A to B in m spatial dimensions
-    Input:
-      A: Nxm numpy array of corresponding points
-      B: Nxm numpy array of corresponding points
-    Returns:
-      T: (m+1)x(m+1) homogeneous transformation matrix that maps A on to B
-      R: mxm rotation matrix
-      t: mx1 translation vector
-    '''
-
-    assert A.shape == B.shape
-
-    # get number of dimensions
-    m = A.shape[1]
-
-    # translate points to their centroids
-    centroid_A = np.mean(A, axis=0)
-    centroid_B = np.mean(B, axis=0)
-    AA = A - centroid_A
-    BB = B - centroid_B
-
-    # rotation matrix
-    H = np.dot(AA.T, BB)
-    U, S, Vt = np.linalg.svd(H)
-    R = np.dot(Vt.T, U.T)
-
-    # special reflection case
-    if np.linalg.det(R) < 0:
-       Vt[m-1,:] *= -1
-       R = np.dot(Vt.T, U.T)
-
-    # translation
-    t = centroid_B.T - np.dot(R,centroid_A.T)
-
-    # homogeneous transformation
-    T = np.identity(m+1)
-    T[:m, :m] = R
-    T[:m, m] = t
-
-    return T, R, t
-
 def point_3d_tracking(old_image_points, new_image_points, old_3d_points, new_3d_points, camera_intrinsics):
-    # Rotation(R) estimation using Nister's Five Points Algorithm
-    # recovering the pose and the essential cv::matrix
-    # E, mask = cv2.findEssentialMat(old_image_points, new_image_points, camera_intrinsics, cv2.RANSAC, 0.999, 1.0)
-    # _, R_mono, _, _ = cv2.recoverPose(E, old_image_points, new_image_points, camera_intrinsics, None, None, mask)
-    # Translation (t) estimation by use solvePnPRansac
-    iterationsCount=500        # number of Ransac iterations.
-    reprojectionError=.5    # maximum allowed distance to consider it an inlier.
-    confidence=0.999          # RANSAC successful confidence.
-    flags=cv2.SOLVEPNP_ITERATIVE
 
-    # # # Use ICP only
-    # _, rotation, translation = best_fit_transform(old_3d_points, new_3d_points)
-    # rvec, _ = cv2.Rodrigues(rotation)
-
-    # TODO: Test this
-    # Use ICP with known correspondences to get initial guess 
-    # _, rotation_init, translation_init = best_fit_transform(old_3d_points, new_3d_points)
-    # rvec_init, _ = cv2.Rodrigues(rotation_init)
-
-    # # Ransac with initial guess for robustness
-    # distCoeffs = np.zeros((4,1), dtype=float)
-    # useExtrinsicGuess=True
-    # _, rvec, translation, _ = cv2.solvePnPRansac(old_3d_points, new_image_points, camera_intrinsics, distCoeffs, rvec_init, translation_init,
-    #                 useExtrinsicGuess, iterationsCount, reprojectionError, confidence,
-    #                 None, flags )
-    # rotation, _ = cv2.Rodrigues(rvec)
-
-    # TODO: Test this
-    # Ransac without initial guess
-    # useExtrinsicGuess=False
-    # distCoeffs = np.zeros((4,1), dtype=float)
-    # _, rvec, translation, _ = cv2.solvePnPRansac(old_3d_points, new_image_points, camera_intrinsics, distCoeffs, None, None,
-    #                 useExtrinsicGuess, iterationsCount, reprojectionError, confidence,
-    #                 None, flags )
     _, rvec, translation, _ = cv2.solvePnPRansac(old_3d_points, new_image_points, camera_intrinsics, None)
     rotation, _ = cv2.Rodrigues(rvec)
 
@@ -230,13 +144,10 @@ if __name__ == "__main__":
         print("Begin streaming at resolution: {} x {}".format(res["width"], res["height"]))
         iter = 0
         while True:
-            iter += 1
             for i, queue in enumerate(queue_list):
                 name = queue.getName()
                 image = queue.get()
                 cur_img_frames[i] = np.array(image.getFrame())
-            if iter < 100:
-                continue
             depth_frame = cur_img_frames[0]
             # cur_img_frames[1] = cv2.equalizeHist(cur_img_frames[1])
             # We can only estimate odometry with we have both the current and previous frames
@@ -257,7 +168,7 @@ if __name__ == "__main__":
 
                 # Match descriptors.
                 matches = bf.match(prev_descriptors, cur_descriptors)
-                if len(matches) > 4:
+                if len(matches) > 20:
                     # Sort them in the order of their distance.
                     matches = sorted(matches, key = lambda x:x.distance)[:max_matches]
 

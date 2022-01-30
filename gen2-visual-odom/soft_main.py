@@ -15,11 +15,13 @@ res = {"height": 480, "width": 640,
        "THE_P": dai.MonoCameraProperties.SensorResolution.THE_480_P}
 # res = {"height": 720, "width": 1080, "THE_P": dai.MonoCameraProperties.SensorResolution.THE_720_P}
 
+min_num_features = 30  # no-op if we do not have enough features
 max_num_features = 1000
 max_feature_depth = 4000  # mm
 min_feature_depth = 100  # mm
 num_vertical_buckets = 30
 features_per_bucket = 20
+
 
 def create_odom_pipeline():
     pipeline = dai.Pipeline()
@@ -28,7 +30,7 @@ def create_odom_pipeline():
     left = pipeline.createMonoCamera()
     right = pipeline.createMonoCamera()
     stereo = pipeline.createStereoDepth()
-    stereo.setRectifyEdgeFillColor(0) # Black, to better see the cutout
+    stereo.setRectifyEdgeFillColor(0)  # Black, to better see the cutout
 
     # Define outputs
     rectifiedRightOut = pipeline.createXLinkOut()
@@ -56,6 +58,13 @@ def create_odom_pipeline():
 
 
 def point_3d_tracking(old_image_points, new_image_points, old_3d_points, new_3d_points, camera_intrinsics):
+
+    # E, mask = cv2.findEssentialMat(
+    #     old_image_points, new_image_points, camera_intrinsics, method=cv2.RANSAC, prob=0.999, threshold=2)
+    # inlier_cond = (mask == 1).ravel()    
+    # _, R_init, translation_init, _ = cv2.recoverPose(E, old_image_points[inlier_cond,:], new_image_points[inlier_cond,:])
+    # rvec_init,_ = cv2.Rodrigues(R_init)
+
     # Translation (t) estimation by use solvePnPRansac
     iterationsCount = 500        # number of Ransac iterations.
     # maximum allowed distance to consider it an inlier.
@@ -64,13 +73,16 @@ def point_3d_tracking(old_image_points, new_image_points, old_3d_points, new_3d_
     flags = cv2.SOLVEPNP_ITERATIVE
 
     # Ransac without initial guess
+    # _, rvec, translation, _ = cv2.solvePnPRansac(old_3d_points, new_image_points, camera_intrinsics, None, rvec_init, translation_init,
+    #                                              True, iterationsCount, reprojectionError, confidence,
+    #                                              None, flags)
     _, rvec, translation, _ = cv2.solvePnPRansac(old_3d_points, new_image_points, camera_intrinsics, None, None, None,
                                                  False, iterationsCount, reprojectionError, confidence,
                                                  None, flags)
     rotation, _ = cv2.Rodrigues(rvec)
 
     odom_ok = True
-    resolution = 1.0 # mm
+    resolution =  3.0  # mm
     translation = np.round(translation / resolution) * resolution
     return translation, rotation, odom_ok
 
@@ -147,8 +159,8 @@ def circularMatchFeatures(prev_left_frame, prev_right_frame, cur_left_frame, cur
         cur_left_frame,   cur_right_frame, cur_left_points,  None, None, None, window_size, 3, termcrit, 0, 0.001)
     matched_right_points, status3, _ = cv2.calcOpticalFlowPyrLK(
         cur_right_frame,  prev_right_frame, cur_right_points, None, None, None, window_size, 3, termcrit, 0, 0.001)
-    prev_right_points, prev_left_points, cur_right_points, cur_left_points, matched_right_points, odom_points.ages = deleteUnmatchedFeatures(prev_right_points, prev_left_points, cur_right_points, cur_left_points,
-                                                                                                                                             matched_right_points, status0, status1, status2, status3, odom_points.ages)
+    prev_right_points, prev_left_points, cur_right_points, cur_left_points, matched_right_points, odom_points.ages = deleteUnmatchedFeatures(np.round(prev_right_points), np.round(prev_left_points), np.round(cur_right_points), np.round(cur_left_points),
+                                                                                                                                             np.round(matched_right_points), status0, status1, status2, status3, odom_points.ages)
 
     return prev_left_points, prev_right_points, cur_left_points, cur_right_points, matched_right_points, odom_points
 
@@ -173,8 +185,7 @@ def matchFeatures(prev_img_frames, cur_img_frames, odom_points):
         prev_left_frame, prev_right_frame, cur_left_frame, cur_right_frame, odom_points)
 
     status = validateMatches(
-        prev_right_points, matched_right_points, threshold=1)
-
+        prev_right_points, matched_right_points, threshold=0)
     num_points = status.sum()
     if num_points > 0:
         print("Matched {} feature points".format(num_points))
@@ -197,6 +208,7 @@ if __name__ == "__main__":
 
     # Connect to device and start pipeline
     print("Opening device")
+    cv2.namedWindow("Current Features")
     with dai.Device(pipeline) as device:
         # get the camera calibration info
         calibData = device.readCalibration()
@@ -280,7 +292,7 @@ if __name__ == "__main__":
                 num_points, prev_left_points, prev_right_points, cur_left_points, cur_right_points, odom_points = matchFeatures(
                     prev_img_frames, cur_img_frames, odom_points)
 
-                if num_points > 10:
+                if num_points > min_num_features:
                     # convert points to 3d using left and right image triangulation
                     prev_4d = cv2.triangulatePoints(
                         proj_mat_right, proj_mat_left, prev_right_points.T, prev_left_points.T)
@@ -296,7 +308,7 @@ if __name__ == "__main__":
                     prev_right_points = prev_right_points[cond]
                     cur_right_points = cur_right_points[cond]
                     num_3d_points = cond.sum()
-                    if num_3d_points >= 10:
+                    if num_3d_points >= min_num_features:
                         print("Num 3d points: ", num_3d_points)
                         translation, rotation, odom_ok = point_3d_tracking(
                             prev_right_points, cur_right_points, prev_points_3d, cur_points_3d, rectified_right_intrinsic)
@@ -316,7 +328,8 @@ if __name__ == "__main__":
                             x, y = pt.ravel().astype(int)
                             old_x, old_y = old_pt.ravel().astype(int)
                             cv2.circle(feature_img, (x, y), 3, (0, 255, 0), -1)
-                            cv2.circle(feature_img, (old_x, old_y), 3, (0, 0, 255), -1)
+                            cv2.circle(feature_img, (old_x, old_y),
+                                       3, (0, 0, 255), -1)
 
                         # # Visualize matches
                         # prev_kpts = [cv2.KeyPoint(*pt.ravel(), 1)
