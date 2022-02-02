@@ -47,7 +47,7 @@ class Pose:
         old_pose = np.eye(4, dtype=float)
         old_pose[:3, 3] = self.position.reshape(3,)
         old_pose[:3, :3] = self.orientation
-        new_pose = old_pose @ np.linalg.inv(pose_update)
+        new_pose = np.dot(old_pose, np.linalg.inv(pose_update))
         self.position = new_pose[:3, 3].reshape(3,)
         self.orientation = new_pose[:3, :3]
 

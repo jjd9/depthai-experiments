@@ -82,8 +82,6 @@ def point_3d_tracking(old_image_points, new_image_points, old_3d_points, new_3d_
     rotation, _ = cv2.Rodrigues(rvec)
 
     odom_ok = True
-    resolution =  3.0  # mm
-    translation = np.round(translation / resolution) * resolution
     return translation, rotation, odom_ok
 
 
@@ -314,7 +312,8 @@ if __name__ == "__main__":
                             prev_right_points, cur_right_points, prev_points_3d, cur_points_3d, rectified_right_intrinsic)
                         time_delta = cur_img_stamp.total_seconds() - prev_img_stamp.total_seconds()
                         # reject obviously bogus odometry spikes
-                        if np.abs(translation).max() < 100:
+                        t_norm = np.linalg.norm(translation)
+                        if t_norm > 0.1 and t_norm < 10.0:
                             # integration change
                             current_pose = np.eye(4)
                             current_pose[0:3, 0:3] = rotation
