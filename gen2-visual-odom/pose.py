@@ -44,12 +44,16 @@ class Pose:
         self.orientation = np.eye(3, dtype=float)  # euler orientation
 
     def update(self, pose_update):
-        old_pose = np.eye(4, dtype=float)
-        old_pose[:3, 3] = self.position.reshape(3,)
-        old_pose[:3, :3] = self.orientation
+        old_pose = self.asHomogeneous()
         new_pose = np.dot(old_pose, np.linalg.inv(pose_update))
         self.position = new_pose[:3, 3].reshape(3,)
         self.orientation = new_pose[:3, :3]
+
+    def asHomogeneous(self):
+        pose_mat = np.eye(4, dtype=float)
+        pose_mat[:3, 3] = self.position.reshape(3,)
+        pose_mat[:3, :3] = self.orientation
+        return pose_mat
 
     def getRPYString(self):
         rpy = rotationMatrixToEulerAngles(self.orientation)

@@ -1,13 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from mpl_toolkits.mplot3d import Axes3D
-import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib import cm
-from numpy import linspace
-import argparse
-import cv2 as cv
 
 def inverse_homogeneoux_matrix(M):
     R = M[0:3, 0:3]
@@ -30,11 +24,8 @@ def transform_to_matplotlib_frame(cMo, X, inverse=False):
     else:
         return M.dot(cMo.dot(X))
 
-def create_camera_model(camera_matrix, width, height, scale_focal, draw_frame_axis=False):
-    fx = camera_matrix[0,0]
-    fy = camera_matrix[1,1]
-    focal = 2 / (fx + fy)
-    f_scale = scale_focal * focal
+def create_camera_model(camera_matrix, width, height, draw_frame_axis=False):
+    f_scale = 30
 
     # draw image plane
     X_img_plane = np.ones((4,5))
@@ -85,88 +76,21 @@ def create_camera_model(camera_matrix, width, height, scale_focal, draw_frame_ax
     else:
         return [X_img_plane, X_triangle, X_center1, X_center2, X_center3, X_center4]
 
-def draw_camera(ax, camera_matrix, cam_width, cam_height, scale_focal,
-                       extrinsics, board_width, board_height, square_size,
-                       patternCentric):
+def draw_camera(ax, camera_matrix, cam_width, cam_height, pose):
     min_values = np.zeros((3,1))
     min_values = np.inf
     max_values = np.zeros((3,1))
     max_values = -np.inf
 
-    X_moving = create_camera_model(camera_matrix, cam_width, cam_height, scale_focal)
+    X_moving = create_camera_model(camera_matrix, cam_width, cam_height)
 
-    cm_subsection = linspace(0.0, 1.0, extrinsics.shape[0])
-    colors = [ cm.jet(x) for x in cm_subsection ]
-
-    for idx in range(extrinsics.shape[0]):
-        R, _ = cv.Rodrigues(extrinsics[idx,0:3])
-        cMo = np.eye(4,4)
-        cMo[0:3,0:3] = R
-        cMo[0:3,3] = extrinsics[idx,3:6]
+    for cMo in pose:
         for i in range(len(X_moving)):
             X = np.zeros(X_moving[i].shape)
             for j in range(X_moving[i].shape[1]):
-                X[0:4,j] = transform_to_matplotlib_frame(cMo, X_moving[i][0:4,j], patternCentric)
-            ax.plot3D(X[0,:], X[1,:], X[2,:], color=colors[idx])
+                X[0:4,j] = transform_to_matplotlib_frame(cMo, X_moving[i][0:4,j])
+            ax.plot3D(X[0,:], X[1,:], X[2,:], color='black')
             min_values = np.minimum(min_values, X[0:3,:].min(1))
             max_values = np.maximum(max_values, X[0:3,:].max(1))
 
     return min_values, max_values
-
-def main():
-    parser = argparse.ArgumentParser(description='Plot camera calibration extrinsics.',
-                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--calibration', type=str, default="../data/left_intrinsics.yml",
-                        help='YAML camera calibration file.')
-    parser.add_argument('--cam_width', type=float, default=0.064/2,
-                        help='Width/2 of the displayed camera.')
-    parser.add_argument('--cam_height', type=float, default=0.048/2,
-                        help='Height/2 of the displayed camera.')
-    parser.add_argument('--scale_focal', type=float, default=40,
-                        help='Value to scale the focal length.')
-    parser.add_argument('--patternCentric', action='store_true',
-                        help='The calibration board is static and the camera is moving.')
-    args = parser.parse_args()
-
-    fs = cv.FileStorage(args.calibration, cv.FILE_STORAGE_READ)
-    board_width = int(fs.getNode('board_width').real())
-    board_height = int(fs.getNode('board_height').real())
-    square_size = fs.getNode('square_size').real()
-    camera_matrix = fs.getNode('camera_matrix').mat()
-    extrinsics = fs.getNode('extrinsic_parameters').mat()
-
-    fig = plt.figure()
-    ax = fig.gca(projection='3d')
-    ax.set_aspect("equal")
-
-    cam_width = args.cam_width
-    cam_height = args.cam_height
-    scale_focal = args.scale_focal
-    min_values, max_values = draw_camera_boards(ax, camera_matrix, cam_width, cam_height,
-                                                scale_focal, extrinsics, board_width,
-                                                board_height, square_size, args.patternCentric)
-
-    X_min = min_values[0]
-    X_max = max_values[0]
-    Y_min = min_values[1]
-    Y_max = max_values[1]
-    Z_min = min_values[2]
-    Z_max = max_values[2]
-    max_range = np.array([X_max-X_min, Y_max-Y_min, Z_max-Z_min]).max() / 2.0
-
-    mid_x = (X_max+X_min) * 0.5
-    mid_y = (Y_max+Y_min) * 0.5
-    mid_z = (Z_max+Z_min) * 0.5
-    ax.set_xlim(mid_x - max_range, mid_x + max_range)
-    ax.set_ylim(mid_y - max_range, mid_y + max_range)
-    ax.set_zlim(mid_z - max_range, mid_z + max_range)
-
-    ax.set_xlabel('x')
-    ax.set_ylabel('z')
-    ax.set_zlabel('-y')
-    ax.set_title('Extrinsic Parameters Visualization')
-
-    plt.show()
-
-if __name__ == "__main__":
-    main()

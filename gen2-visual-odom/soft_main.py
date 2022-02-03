@@ -4,6 +4,9 @@ import cv2
 import depthai as dai
 import numpy as np
 from pose import Pose
+# import matplotlib.pyplot as plt
+# from mpl_toolkits.mplot3d import Axes3D
+# from pose_viz import draw_camera
 from bucket import Bucket
 from feature import FeaturePoint, FeatureSet
 import time
@@ -85,20 +88,20 @@ def point_3d_tracking(old_image_points, new_image_points, old_3d_points, new_3d_
     return translation, rotation, odom_ok
 
 
-fast_detector = cv2.FastFeatureDetector_create()
-fast_detector.setThreshold(30)
-fast_detector.setNonmaxSuppression(True)
-# orb = cv2.ORB_create(nfeatures=1000)
+# fast_detector = cv2.FastFeatureDetector_create()
+# fast_detector.setThreshold(30)
+# fast_detector.setNonmaxSuppression(True)
+# orb = cv2.ORB_create(nfeatures=500)
 
 
 def appendFeaturePoints(image, features):
     # kpts, _ = orb.detectAndCompute(image, None)
-    kpts = fast_detector.detect(image, None)
-    features.points += [list(k.pt) for k in kpts]
-    features.ages += [0] * len(kpts)
-    # corners = cv2.goodFeaturesToTrack(image, 1000, 0.01, 10).reshape(-1,2)
-    # features.points += corners.tolist()
-    # features.ages += [0] * corners.shape[0]
+    # kpts = fast_detector.detect(image, None)
+    # features.points += [list(k.pt) for k in kpts]
+    # features.ages += [0] * len(kpts)
+    corners = cv2.goodFeaturesToTrack(image, max_num_features, 0.01, 10).reshape(-1,2)
+    features.points += corners.tolist()
+    features.ages += [0] * corners.shape[0]
     return features
 
 
@@ -204,6 +207,11 @@ if __name__ == "__main__":
     print("Initialize pipeline")
     pipeline, streams = create_odom_pipeline()
 
+    # plt.ion()
+    # fig = plt.figure()
+    # ax = plt.axes(projection='3d')
+    # pose_set = []
+
     # Connect to device and start pipeline
     print("Opening device")
     cv2.namedWindow("Current Features")
@@ -267,7 +275,9 @@ if __name__ == "__main__":
         print("Begin streaming at resolution: {} x {}".format(
             res["width"], res["height"]))
         first = True
+        iter = 0
         while True:
+            iter+=1
             for i, queue in enumerate(queue_list):
                 name = queue.getName()
                 image = queue.get()
@@ -311,14 +321,33 @@ if __name__ == "__main__":
                         translation, rotation, odom_ok = point_3d_tracking(
                             prev_right_points, cur_right_points, prev_points_3d, cur_points_3d, rectified_right_intrinsic)
                         time_delta = cur_img_stamp.total_seconds() - prev_img_stamp.total_seconds()
-                        # reject obviously bogus odometry spikes
+                        # reject obviously bogus odometry
                         t_norm = np.linalg.norm(translation)
-                        if t_norm > 0.1 and t_norm < 10.0:
-                            # integration change
-                            current_pose = np.eye(4)
-                            current_pose[0:3, 0:3] = rotation
-                            current_pose[0:3, 3] = translation.reshape(3,)
-                            pose.update(current_pose)
+                        if t_norm < 2.0 or t_norm > 200.0:
+                            translation *= 0
+                        # integration change
+                        current_pose = np.eye(4)
+                        current_pose[0:3, 0:3] = rotation
+                        current_pose[0:3, 3] = translation.reshape(3,)
+                        pose.update(current_pose)
+
+                        # if iter % 10 == 0:
+                        #     # pose_set.append(pose.asHomogeneous())
+                        #     pose_set = [pose.asHomogeneous()]
+                        #     min_values, max_values = draw_camera(ax, rectified_right_intrinsic, 100, 30, pose_set)
+
+                        #     ax.view_init(elev=10., azim=0)
+                        #     ax.set_xlim(-500, 500)
+                        #     ax.set_ylim(-500, 500)
+                        #     ax.set_zlim(-500, 500)
+
+                        #     ax.set_xlabel('x')
+                        #     ax.set_ylabel('z')
+                        #     ax.set_zlabel('-y')
+                        #     ax.set_title('Camera Pose Visualization')
+                        #     plt.draw()
+                        #     plt.pause(0.02)
+                        #     ax.cla()
 
                         # Visualize features
                         feature_img = cv2.cvtColor(
@@ -330,7 +359,16 @@ if __name__ == "__main__":
                             cv2.circle(feature_img, (old_x, old_y),
                                        3, (0, 0, 255), -1)
 
-                        # # Visualize matches
+                        # # Visualize left/right matches 
+                        # prev_kpts = [cv2.KeyPoint(*pt.ravel(), 1)
+                        #             for pt in cur_left_points]
+                        # cur_kpts = [cv2.KeyPoint(*pt.ravel(), 1)
+                        #             for pt in cur_right_points]
+                        # matches = [cv2.DMatch(idx, idx, 0) for idx in range(len(cur_kpts))]
+                        # feature_img = cv2.drawMatches(cur_img_frames[1], prev_kpts, cur_img_frames[0], cur_kpts,
+                        #                             matches, None, flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS, matchColor=(0, 255, 0))
+
+                        # # Visualize prev/cur matches
                         # prev_kpts = [cv2.KeyPoint(*pt.ravel(), 1)
                         #             for pt in prev_right_points]
                         # cur_kpts = [cv2.KeyPoint(*pt.ravel(), 1)
